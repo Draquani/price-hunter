@@ -10,8 +10,8 @@ An AI-powered price comparison web app. You describe a product, PriceHunter clar
 
 1. **Clarifies** — Asks focused spec questions (brand, size, power source, etc.) until it has a specific, searchable product
 2. **Confirms** — Shows exactly what it will search for and which stores, waits for your go-ahead
-3. **Pre-checks** — Verifies the product actually exists at retail before scraping
-4. **Searches** — Queries each store via Tavily, scrapes up to 5 candidate product pages per store via Firecrawl, uses an LLM to extract and strictly validate the price
+3. **Pre-checks** — Optionally verifies the product actually exists at retail (skipped for mainstream products to save time)
+4. **Searches** — Queries all stores in parallel via Tavily, scrapes top 3 candidate product pages per store simultaneously via Firecrawl, uses an LLM to extract and strictly validate the price
 5. **Reports** — Displays a comparison table with live prices, best-deal highlight, product image, and direct links
 
 ---
@@ -38,11 +38,11 @@ User → app/page.tsx (chat UI)
 app/api/price-search/route.ts
   ├── Agentic loop (max 8 iterations) via OpenRouter
   ├── Tool: update_store_list      — saves the agreed store list
-  ├── Tool: check_product_exists   — quick Tavily search (no domain filter) to verify product exists at retail
+  ├── Tool: check_product_exists   — optional Tavily search to verify obscure products exist at retail
   └── Tool: get_item_prices
-        ├── Tavily search per store (includeDomains, max 10 results)
+        ├── Tavily search per store in parallel (includeDomains, max 10 results)
         ├── URL ranking — product-page patterns preferred over category/search pages
-        ├── Firecrawl scrape — up to 5 candidate URLs per store
+        ├── Firecrawl scrape — top 3 candidate URLs per store scraped in parallel
         └── LLM price extraction — strict brand/model/spec matching; rejects wrong variants
               ↓
   lastPriceResults override — actual scraper URLs/prices always replace LLM-generated ones
@@ -54,13 +54,17 @@ app/page.tsx — renders status messages, final chat reply, PriceResults table
 
 **`lastPriceResults` override:** The LLM writes a final JSON block with results, but the server always substitutes the real scraper data before sending. This prevents the LLM from fabricating URLs or prices.
 
-**Strict price extraction:** The LLM extractor rejects pages where brand, model, or any specified spec (size, power source, color, etc.) doesn't match. It tries up to 5 candidate URLs before giving up on a store.
+**Parallel scraping:** All stores are searched simultaneously via `Promise.all`, and within each store the top 3 candidate URLs are scraped in parallel too. This cuts total search time significantly compared to sequential scraping.
+
+**Strict price extraction:** The LLM extractor rejects pages where brand, model, or any specified spec (size, power source, color, etc.) doesn't match. It tries up to 3 candidate URLs before giving up on a store.
 
 **3-step workflow (CLARIFY → CONFIRM → SEARCH):** The agent asks spec questions, presents exactly what it'll search for, waits for user confirmation, then calls tools. This avoids wasted scraping on the wrong product.
 
-**SSE streaming:** Status messages (`Searching Walmart…`, `Reading price from Amazon…`) stream to the UI in real time so users see progress during the 15–30 second search.
+**SSE streaming:** Status messages (`Searching Walmart…`, `Reading price from Amazon…`) stream to the UI in real time so users see progress during the search.
 
 **No model-number invention:** The system prompt explicitly forbids the LLM from inventing model numbers during clarification. It builds the search query only from specs the user explicitly stated.
+
+**Optional existence check:** `check_product_exists` is skipped for mainstream products (major brands, common electronics, etc.) — it's only called when the agent has genuine doubt. Saves 1–2s on most searches.
 
 ---
 
@@ -91,7 +95,7 @@ price-hunter/
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/Draquani/price-hunter.git
+git clone https://github.com/YOUR_USERNAME/price-hunter.git
 cd price-hunter
 npm install
 ```

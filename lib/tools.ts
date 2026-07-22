@@ -18,7 +18,7 @@ export const PRICE_TOOLS = [
     type: "function" as const,
     function: {
       name: "check_product_exists",
-      description: "Verify a product actually exists at retail before searching for prices. Call this after the user confirms specs but BEFORE get_item_prices. Returns real product names found. If results don't match what the user wants, go back and ask them to adjust their specs.",
+      description: "Verify a product exists at retail. Use ONLY for obscure or unusual products where existence is uncertain — skip for mainstream brands and common products. If called and results don't match, ask the user to adjust their specs.",
       parameters: {
         type: "object",
         properties: {
@@ -32,7 +32,7 @@ export const PRICE_TOOLS = [
     type: "function" as const,
     function: {
       name: "get_item_prices",
-      description: "Search for the current price of a product at each store. Only call this AFTER check_product_exists confirms the product is real. Use EXACTLY the product string the user confirmed — do not substitute brands or models.",
+      description: "Search for the current price of a product at each store. Use EXACTLY the product string the user confirmed — do not substitute brands or models.",
       parameters: {
         type: "object",
         properties: {
@@ -78,9 +78,9 @@ Wait for the user to confirm before calling any tools.
 STEP 3 — SEARCH.
 After the user confirms:
 a. Call update_store_list with the agreed store list.
-b. Call check_product_exists with the product description to verify it actually exists at retail.
-   - If the results look right → proceed to step c.
-   - If the results show unrelated products or nothing → tell the user "I couldn't find that exact product — let's adjust your specs" and go back to Step 1.
+b. Call check_product_exists ONLY if you have genuine doubt about whether the product exists at retail (e.g. a very obscure item, an unusual brand, or a spec combination you've never seen). Skip it for well-known products like mainstream electronics, major appliance brands, common tools, etc. — those clearly exist and the pre-check just adds unnecessary delay.
+   - If you do call it and results look right → proceed to step c.
+   - If results show unrelated products or nothing → tell the user "I couldn't find that exact product — let's adjust your specs" and go back to Step 1.
 c. Call get_item_prices — use the user's stated specs as the product string (do not add or invent model numbers not confirmed by the user).
 d. After get_item_prices returns:
    - If at least one store returned a price → output the JSON block below (no text before or after).
