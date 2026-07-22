@@ -1,14 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { tavily } from "@tavily/core";
 import FirecrawlApp from "@mendable/firecrawl-js";
 import { PRICE_TOOLS, AGENT_SYSTEM_PROMPT } from "@/lib/tools";
 import { ChatMessage, PriceComparisonResult, StoreResult } from "@/lib/types";
 
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = "anthropic/claude-3.5-sonnet";
+const MODEL = "google/gemini-3-flash-preview";
 
-const tavilyClient = tavily({ apiKey: process.env.TAVILY_API_KEY! });
-const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY! });
+function sseEvent(data: object): string {
+  return `data: ${JSON.stringify(data)}\n\n`;
+}
 
 function handleUpdateStoreList(args: {
   stores: string[];
@@ -17,59 +18,181 @@ function handleUpdateStoreList(args: {
   return {
     stores: args.stores,
     suggested_additions: args.suggested_additions ?? [],
-    message: `Store list saved: ${args.stores.join(", ")}${
-      args.suggested_additions?.length
-        ? `. Suggested additions: ${args.suggested_additions.join(", ")}`
-        : ""
-    }`,
+    message: `Store list saved: ${args.stores.join(", ")}`,
   };
+}
+
+async function extractPriceWithLLM(
+  product: string,
+  store: string,
+  pageContent: string,
+  apiKey: string
+): Promise<{ price: string | null; note: string | null }> {
+  const truncated = pageContent.slice(0, 8000);
+  const res = await fetch(OPENROUTER_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://price-hunter.vercel.app",
+      "X-Title": "PriceHunter",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [{
+        role: "user",
+        content: `You are a strict price extraction tool. From the product page content below (from ${store}), find the current selling price for EXACTLY: "${product}".
+
+Return ONLY a JSON object:
+{"price": "$X.XX", "note": "optional short note"}
+
+STRICT MATCHING RULES — every applicable criterion must match:
+1. Brand/manufacturer must match (e.g. if searching for Sony, reject Samsung, LG, Bose, etc.)
+2. Model name/number must match (e.g. if searching for WH-1000XM5, reject WH-1000XM4 or WF-1000XM5)
+3. Product category must match (e.g. if searching for headphones, reject a TV or laptop page)
+4. Key specs must match when specified — size, capacity, speed, color, variant, generation, power source, etc.
+   Examples: 32GB ≠ 16GB; CL30 ≠ CL36; DDR5 ≠ DDR4; 65" ≠ 55"; M3 ≠ M2; gas ≠ electric/battery/brushless
+
+Return {"price": null, "note": "not found"} if:
+- The brand is different
+- The model is a different variant or generation
+- The product is a completely different category
+- The page shows multiple products (listing/search/category page)
+- Any specified spec doesn't match (power source, size, color, etc.)
+
+Return {"price": null, "note": "category page"} for search results, category listings, or pages with no single product.
+Return {"price": null, "note": "price not found"} if the page is the right product but the price isn't visible.
+
+Do NOT return prices for accessories, extended warranties, bundles, or related items.
+Do NOT guess — only return the explicit "Add to Cart" / "Buy Now" price for the exact product.
+
+Page content:
+${truncated}`,
+      }],
+    }),
+  });
+  if (!res.ok) return { price: null, note: "extraction failed" };
+  const data = await res.json();
+  const text: string = data.choices?.[0]?.message?.content ?? "";
+  try {
+    const jsonMatch = text.match(/\{[\s\S]*?\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return { price: parsed.price ?? null, note: parsed.note ?? null };
+    }
+  } catch { /* fall through */ }
+  return { price: null, note: "parse error" };
+}
+
+const PRODUCT_URL_PATTERNS: Record<string, (url: string) => boolean> = {
+  "amazon.com": (url) => /amazon\.com\/.*\/dp\/[A-Z0-9]{10}/.test(url),
+  "bestbuy.com": (url) => /bestbuy\.com\/site\/.*\/\d+\.p/.test(url),
+  "walmart.com": (url) => /walmart\.com\/ip\//.test(url),
+  "target.com": (url) => /target\.com\/p\//.test(url),
+  "newegg.com": (url) => /newegg\.com\/p\//.test(url) || /newegg\.com\/.*\/Item\.aspx/.test(url),
+  "bhphotovideo.com": (url) => /bhphotovideo\.com\/c\/product\//.test(url),
+  "costco.com": (url) => /costco\.com\/.*\.product\.\d+\.html/.test(url),
+  "ebay.com": (url) => /ebay\.com\/itm\//.test(url),
+};
+
+const CATEGORY_PATTERNS = [
+  "/search", "/browse", "/category", "?q=", "?k=", "?query=",
+  "/s?", "/c/", "/shop/", "/b/", "/sch/", "/deals/", "/list/",
+];
+
+function isProductPage(url: string, domain: string): boolean {
+  const lower = url.toLowerCase();
+  if (CATEGORY_PATTERNS.some((p) => lower.includes(p))) return false;
+  const checker = PRODUCT_URL_PATTERNS[domain];
+  return checker ? checker(url) : true;
+}
+
+async function handleCheckProductExists(args: {
+  product: string;
+}): Promise<{ found: boolean; results: string[]; suggestion: string }> {
+  const tavilyClient = tavily({ apiKey: process.env.TAVILY_API_KEY! });
+  try {
+    const searchResults = await tavilyClient.search(`${args.product} buy`, {
+      maxResults: 5,
+      searchDepth: "basic",
+    });
+    const titles = searchResults.results.map((r) => r.title).filter(Boolean);
+    const found = titles.length > 0;
+    return {
+      found,
+      results: titles.slice(0, 5),
+      suggestion: found
+        ? "Product appears to exist at retail. Proceed with get_item_prices."
+        : "No matching products found. Ask the user to adjust their specs.",
+    };
+  } catch {
+    return { found: false, results: [], suggestion: "Search failed. Proceed cautiously or ask user to retry." };
+  }
 }
 
 async function handleGetItemPrices(args: {
   product: string;
   stores: string[];
+  apiKey: string;
+  sendStatus: (msg: string) => void;
 }): Promise<StoreResult[]> {
-  const { product, stores } = args;
+  const tavilyClient = tavily({ apiKey: process.env.TAVILY_API_KEY! });
+  const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY! });
+  const { product, stores, apiKey, sendStatus } = args;
+
+  const searchQuery = `${product} buy`;
+  const storeList = stores.join(", ");
+  sendStatus(`Searching ${storeList} for "${product}"…`);
 
   const results = await Promise.all(
     stores.map(async (store): Promise<StoreResult> => {
       try {
-        const searchQuery = `${product} price site:${storeDomain(store)} OR "${store}" "${product}"`;
+        const domain = storeDomain(store);
+
         const searchResults = await tavilyClient.search(searchQuery, {
-          maxResults: 3,
+          maxResults: 10,
           searchDepth: "basic",
+          includeDomains: [domain],
         });
 
-        const productUrl = searchResults.results[0]?.url ?? null;
+        const ranked = [...searchResults.results].sort((a, b) => {
+          const aIsProduct = isProductPage(a.url, domain) ? 1 : 0;
+          const bIsProduct = isProductPage(b.url, domain) ? 1 : 0;
+          return bIsProduct - aIsProduct;
+        });
 
-        if (!productUrl) {
+        const productCandidates = ranked.filter((r) => isProductPage(r.url, domain));
+        const candidates = productCandidates.length > 0 ? productCandidates : ranked;
+
+        if (candidates.length === 0) {
           return { store, price: "N/A", url: "", available: false, note: "Not found in search" };
         }
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const scraped = await firecrawl.scrapeUrl(productUrl, { formats: ["markdown"] }) as any;
+        sendStatus(`Loading product pages from ${store}…`);
 
-        if (!scraped?.markdown) {
-          const snippet = searchResults.results[0]?.content ?? "";
-          const price = extractPriceFromText(snippet);
-          return {
-            store,
-            price: price ?? "N/A",
-            url: productUrl,
-            available: !!price,
-            note: price ? "Price from search snippet" : "Could not scrape page",
-          };
+        let lastNote: string | null = null;
+        for (const candidate of candidates.slice(0, 5)) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const scraped = await firecrawl.scrapeUrl(candidate.url, { formats: ["markdown"] }) as any;
+            const pageContent: string = scraped?.markdown ?? candidate?.content ?? "";
+
+            if (!pageContent || pageContent.length < 100) continue;
+
+            sendStatus(`Reading price from ${store}…`);
+
+            const { price, note } = await extractPriceWithLLM(product, store, pageContent, apiKey);
+            lastNote = note;
+
+            if (price) {
+              return { store, price, url: candidate.url, available: true, note: note ?? undefined };
+            }
+          } catch {
+            continue;
+          }
         }
 
-        const price = extractPriceFromText(scraped.markdown as string);
-
-        return {
-          store,
-          price: price ?? "N/A",
-          url: productUrl,
-          available: !!price,
-          note: price ? undefined : "Price not found on page",
-        };
+        return { store, price: "N/A", url: "", available: false, note: lastNote ?? "Price not found" };
       } catch (err) {
         console.error(`Error fetching price for ${store}:`, err);
         return { store, price: "N/A", url: "", available: false, note: "Search error" };
@@ -93,97 +216,148 @@ function storeDomain(store: string): string {
     ebay: "ebay.com",
     "home depot": "homedepot.com",
     lowes: "lowes.com",
+    "lowe's": "lowes.com",
     apple: "apple.com",
     "microsoft store": "microsoft.com",
+    "tractor supply": "tractorsupply.com",
+    "tractor supply co": "tractorsupply.com",
+    "tractor supply co.": "tractorsupply.com",
   };
-  return map[store.toLowerCase()] ?? `${store.toLowerCase().replace(/\\s+/g, "")}.com`;
-}
-
-function extractPriceFromText(text: string): string | null {
-  const match = text.match(/\\$\\s*[\\d,]+(?:\\.\\d{2})?/);
-  return match ? match[0].replace(/\\s/, "") : null;
+  return map[store.toLowerCase()] ?? `${store.toLowerCase().replace(/[^a-z0-9]/g, "")}.com`;
 }
 
 export async function POST(req: NextRequest) {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    return new Response(
+      sseEvent({ error: "OPENROUTER_API_KEY is not configured.", priceResult: null, updatedStores: [] }),
+      { status: 500, headers: { "Content-Type": "text/event-stream" } }
+    );
+  }
+
   const { messages, stores: savedStores } = await req.json() as {
     messages: ChatMessage[];
     stores: string[];
   };
 
-  const systemContent =
-    AGENT_SYSTEM_PROMPT +
-    (savedStores.length > 0
-      ? `\n\nThe user's saved stores are: ${savedStores.join(", ")}. Use these when calling get_item_prices unless they specify otherwise.`
-      : "");
+  const encoder = new TextEncoder();
 
-  const allMessages: Array<ChatMessage | Record<string, unknown>> = [
-    { role: "system", content: systemContent },
-    ...messages,
-  ];
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data: object) => {
+        controller.enqueue(encoder.encode(sseEvent(data)));
+      };
+      const sendStatus = (msg: string) => send({ status: msg });
 
-  const MAX_ITERATIONS = 8;
-  let updatedStores: string[] = [...savedStores];
+      try {
+        const systemContent =
+          AGENT_SYSTEM_PROMPT +
+          (savedStores.length > 0
+            ? `\n\nThe user's saved stores are: ${savedStores.join(", ")}.`
+            : "");
 
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    const response = await fetch(OPENROUTER_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "HTTP-Referer": "https://price-hunter.vercel.app",
-        "X-Title": "PriceHunter",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: allMessages,
-        tools: PRICE_TOOLS,
-        tool_choice: "auto",
-      }),
-    });
+        const allMessages: Array<ChatMessage | Record<string, unknown>> = [
+          { role: "system", content: systemContent },
+          ...messages,
+        ];
 
-    if (!response.ok) {
-      const err = await response.text();
-      return NextResponse.json({ error: `LLM API error: ${err}` }, { status: 500 });
-    }
+        const MAX_ITERATIONS = 8;
+        let updatedStores: string[] = [...savedStores];
+        let lastPriceResults: StoreResult[] | null = null;
 
-    const data = await response.json();
-    const choice = data.choices[0];
-    const assistantMsg = choice.message;
+        sendStatus("Thinking about your request…");
 
-    allMessages.push(assistantMsg);
+        for (let i = 0; i < MAX_ITERATIONS; i++) {
+          const response = await fetch(OPENROUTER_API_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${apiKey}`,
+              "HTTP-Referer": "https://price-hunter.vercel.app",
+              "X-Title": "PriceHunter",
+            },
+            body: JSON.stringify({
+              model: MODEL,
+              messages: allMessages,
+              tools: PRICE_TOOLS,
+              tool_choice: "auto",
+            }),
+          });
 
-    if (!assistantMsg.tool_calls?.length) {
-      const content: string = assistantMsg.content ?? "";
-      let priceResult: PriceComparisonResult | null = null;
-      const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/);
-      if (jsonMatch) {
-        try { priceResult = JSON.parse(jsonMatch[1]); } catch { }
-      }
-      return NextResponse.json({ content: priceResult ? priceResult.summary : content, priceResult, updatedStores });
-    }
+          if (!response.ok) {
+            const err = await response.text();
+            send({ error: `LLM API error: ${err}`, priceResult: null, updatedStores });
+            controller.close();
+            return;
+          }
 
-    const toolResults = await Promise.all(
-      assistantMsg.tool_calls.map(async (tc: { id: string; function: { name: string; arguments: string } }) => {
-        const args = JSON.parse(tc.function.arguments);
-        let result: unknown;
-        if (tc.function.name === "update_store_list") {
-          result = handleUpdateStoreList(args);
-          updatedStores = (result as { stores: string[] }).stores;
-        } else if (tc.function.name === "get_item_prices") {
-          result = await handleGetItemPrices(args);
-        } else {
-          result = { error: `Unknown tool: ${tc.function.name}` };
+          const data = await response.json();
+          const assistantMsg = data.choices[0].message;
+          allMessages.push(assistantMsg);
+
+          if (!assistantMsg.tool_calls?.length) {
+            const content: string = assistantMsg.content ?? "";
+            let priceResult: PriceComparisonResult | null = null;
+            const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/);
+            if (jsonMatch) {
+              try { priceResult = JSON.parse(jsonMatch[1]); } catch { /* ignore */ }
+            }
+            if (priceResult && lastPriceResults) {
+              priceResult.results = lastPriceResults;
+            }
+            if (priceResult) sendStatus("Tallying up the results…");
+            send({
+              content: priceResult ? priceResult.summary : content,
+              priceResult,
+              updatedStores,
+            });
+            controller.close();
+            return;
+          }
+
+          const toolResults = await Promise.all(
+            assistantMsg.tool_calls.map(async (tc: {
+              id: string;
+              function: { name: string; arguments: string };
+            }) => {
+              const args = JSON.parse(tc.function.arguments);
+              let result: unknown;
+
+              if (tc.function.name === "update_store_list") {
+                sendStatus("Picking the best stores to check…");
+                result = handleUpdateStoreList(args);
+                updatedStores = (result as { stores: string[] }).stores;
+              } else if (tc.function.name === "check_product_exists") {
+                sendStatus("Verifying the product exists…");
+                result = await handleCheckProductExists(args);
+              } else if (tc.function.name === "get_item_prices") {
+                result = await handleGetItemPrices({ ...args, apiKey, sendStatus });
+                lastPriceResults = result as StoreResult[];
+                sendStatus("Comparing prices…");
+              } else {
+                result = { error: `Unknown tool: ${tc.function.name}` };
+              }
+
+              return { role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) };
+            })
+          );
+
+          allMessages.push(...toolResults);
         }
-        return { role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) };
-      })
-    );
 
-    allMessages.push(...toolResults);
-  }
+        send({ content: "I hit my search limit — try a more specific product name?", priceResult: null, updatedStores });
+      } catch (err) {
+        send({ error: String(err), priceResult: null, updatedStores: savedStores });
+      }
+      controller.close();
+    },
+  });
 
-  return NextResponse.json({
-    content: "I hit my search limit on that one — try narrowing down the product name or stores?",
-    priceResult: null,
-    updatedStores,
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
   });
 }

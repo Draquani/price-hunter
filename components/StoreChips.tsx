@@ -1,13 +1,9 @@
 "use client";
 
-interface Props {
-  stores: string[];
-  onRemove: (store: string) => void;
-}
+interface Props { stores: string[]; onRemove: (store: string) => void; }
 
 export default function StoreChips({ stores, onRemove }: Props) {
   if (stores.length === 0) return null;
-
   return (
     <div className="flex flex-wrap gap-2 px-4 py-2 bg-white/5 border-b border-white/10">
       <span className="text-white/40 text-xs self-center">Saved stores:</span>
