@@ -18,7 +18,7 @@ const WELCOME: AppMessage = {
 
 function PawIcon({ className = "w-5 h-5" }: { className?: string }) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+    <svg className={className} viewBox="0 0 24 24" fill="#fb923c" xmlns="http://www.w3.org/2000/svg">
       <ellipse cx="6" cy="5.5" rx="1.7" ry="2.2" />
       <ellipse cx="10.5" cy="3.8" rx="1.5" ry="2" />
       <ellipse cx="15" cy="4.2" rx="1.5" ry="2" />
@@ -158,7 +158,7 @@ export default function Home() {
     <div className="min-h-screen bg-gradient-to-br from-indigo-950 via-violet-950 to-fuchsia-950 flex flex-col">
       <header className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-black/20 backdrop-blur-sm sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-800 to-indigo-900 flex items-center justify-center shadow-lg text-orange-400">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-800 to-indigo-900 flex items-center justify-center shadow-lg">
             <PawIcon className="w-5 h-5" />
           </div>
           <div>
@@ -197,7 +197,7 @@ export default function Home() {
         {messages.map((msg) => (
           <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
             {msg.role === "assistant" && (
-              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-violet-800 to-indigo-900 flex items-center justify-center flex-shrink-0 mt-1 mr-2 shadow text-orange-400">
+              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-violet-800 to-indigo-900 flex items-center justify-center flex-shrink-0 mt-1 mr-2 shadow">
                 <PawIcon className="w-4 h-4" />
               </div>
             )}
@@ -243,7 +243,7 @@ export default function Home() {
             <p className="text-white/20 text-xs">Prices fetched live via Tavily + Firecrawl · Enter to send · Shift+Enter for new line</p>
             <button onClick={downloadSnapshot} title="Download debug snapshot" className="text-white/20 hover:text-white/60 transition-colors flex items-center gap-1 text-xs ml-3 flex-shrink-0">
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0118.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
               snapshot
