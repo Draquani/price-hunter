@@ -7,12 +7,10 @@ import { ChatMessage, PriceComparisonResult, StoreResult } from "@/lib/types";
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = "google/gemini-3-flash-preview";
 
-// ─── SSE helpers ─────────────────────────────────────────────────────────────
 function sseEvent(data: object): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
-// ─── Tool: update_store_list ──────────────────────────────────────────────────
 function handleUpdateStoreList(args: {
   stores: string[];
   suggested_additions?: string[];
@@ -24,7 +22,6 @@ function handleUpdateStoreList(args: {
   };
 }
 
-// ─── LLM-based price extraction ───────────────────────────────────────────────
 async function extractPriceWithLLM(
   product: string,
   store: string,
@@ -87,7 +84,6 @@ ${truncated}`,
   return { price: null, note: "parse error" };
 }
 
-// ─── Product-page URL patterns per store ─────────────────────────────────────
 const PRODUCT_URL_PATTERNS: Record<string, (url: string) => boolean> = {
   "amazon.com": (url) => /amazon\.com\/.*\/dp\/[A-Z0-9]{10}/.test(url),
   "bestbuy.com": (url) => /bestbuy\.com\/site\/.*\/\d+\.p/.test(url),
@@ -111,7 +107,6 @@ function isProductPage(url: string, domain: string): boolean {
   return checker ? checker(url) : true;
 }
 
-// ─── Tool: check_product_exists ──────────────────────────────────────────────
 async function handleCheckProductExists(args: {
   product: string;
 }): Promise<{ found: boolean; results: string[]; suggestion: string }> {
@@ -135,7 +130,6 @@ async function handleCheckProductExists(args: {
   }
 }
 
-// ─── Tool: get_item_prices ────────────────────────────────────────────────────
 async function handleGetItemPrices(args: {
   product: string;
   stores: string[];
@@ -146,9 +140,7 @@ async function handleGetItemPrices(args: {
   const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY! });
   const { product, stores, apiKey, sendStatus } = args;
 
-  // Purchase-intent query surfaces product pages over category pages
   const searchQuery = `${product} buy`;
-
   const storeList = stores.join(", ");
   sendStatus(`Searching ${storeList} for "${product}"…`);
 
@@ -178,13 +170,17 @@ async function handleGetItemPrices(args: {
 
         sendStatus(`Loading product pages from ${store}…`);
 
-        // Scrape top 3 candidates in parallel — much faster than sequential
+        // Scrape top 3 candidates in parallel with 8s timeout per scrape
+        const SCRAPE_TIMEOUT_MS = 8000;
         const topCandidates = candidates.slice(0, 3);
         const scrapeResults = await Promise.all(
           topCandidates.map(async (candidate) => {
             try {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const scraped = await firecrawl.scrapeUrl(candidate.url, { formats: ["markdown"] }) as any;
+              const scraped = await Promise.race([
+                firecrawl.scrapeUrl(candidate.url, { formats: ["markdown"] }) as Promise<any>,
+                new Promise<null>((_, reject) => setTimeout(() => reject(new Error("scrape timeout")), SCRAPE_TIMEOUT_MS)),
+              ]);
               const pageContent: string = scraped?.markdown ?? candidate?.content ?? "";
               if (!pageContent || pageContent.length < 100) return null;
               sendStatus(`Reading price from ${store}…`);
@@ -196,7 +192,6 @@ async function handleGetItemPrices(args: {
           })
         );
 
-        // Return first candidate that has a price (preserving ranked order)
         const winner = scrapeResults.find((r) => r?.price);
         if (winner) {
           return { store, price: winner.price!, url: winner.url, available: true, note: winner.note ?? undefined };
@@ -213,7 +208,6 @@ async function handleGetItemPrices(args: {
   return results;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 function storeDomain(store: string): string {
   const map: Record<string, string> = {
     amazon: "amazon.com",
@@ -237,7 +231,6 @@ function storeDomain(store: string): string {
   return map[store.toLowerCase()] ?? `${store.toLowerCase().replace(/\s+/g, "")}.com`;
 }
 
-// ─── Main route handler ───────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -314,7 +307,6 @@ export async function POST(req: NextRequest) {
             if (jsonMatch) {
               try { priceResult = JSON.parse(jsonMatch[1]); } catch { /* ignore */ }
             }
-            // Override results array with actual scraper data — never trust LLM-generated URLs/prices
             if (priceResult && lastPriceResults) {
               priceResult.results = lastPriceResults;
             }
