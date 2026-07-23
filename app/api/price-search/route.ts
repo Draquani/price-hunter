@@ -53,18 +53,23 @@ STRICT MATCHING RULES — every applicable criterion must match:
 4. Key specs must match when specified — size, capacity, speed, color, variant, generation, power source, etc.
    Examples: 32GB ≠ 16GB; CL30 ≠ CL36; DDR5 ≠ DDR4; 65" ≠ 55"; M3 ≠ M2; gas ≠ electric/battery/brushless
 
+PRICE RULES:
+- Return the CURRENT SELLING PRICE — what a customer pays today (the "Add to Cart" / "Buy Now" price).
+- If the item is ON SALE, return the SALE PRICE (the lower/discounted price), NOT the original/was/MSRP price.
+- If multiple colors/sizes exist and prices vary, return the LOWEST available price and note the range (e.g. "From $107.93, varies by color").
+- Put the original/list price in the note if useful: e.g. "Sale price (was $145.00)".
+
 Return {"price": null, "note": "not found"} if:
 - The brand is different
 - The model is a different variant or generation
 - The product is a completely different category
 - The page shows multiple products (listing/search/category page)
-- Any specified spec doesn't match (power source, size, color, etc.)
 
 Return {"price": null, "note": "category page"} for search results, category listings, or pages with no single product.
 Return {"price": null, "note": "price not found"} if the page is the right product but the price isn't visible.
 
 Do NOT return prices for accessories, extended warranties, bundles, or related items.
-Do NOT guess — only return the explicit "Add to Cart" / "Buy Now" price for the exact product.
+Do NOT guess — only return the explicit current selling price for the exact product.
 
 Page content:
 ${truncated}`,
@@ -93,6 +98,9 @@ const PRODUCT_URL_PATTERNS: Record<string, (url: string) => boolean> = {
   "bhphotovideo.com": (url) => /bhphotovideo\.com\/c\/product\//.test(url),
   "costco.com": (url) => /costco\.com\/.*\.product\.\d+\.html/.test(url),
   "ebay.com": (url) => /ebay\.com\/itm\//.test(url),
+  "dickssportinggoods.com": (url) => /dickssportinggoods\.com\/p\//.test(url),
+  "footlocker.com": (url) => /footlocker\.com\/product\//.test(url),
+  "nike.com": (url) => /nike\.com\/t\//.test(url),
 };
 
 const CATEGORY_PATTERNS = [
@@ -170,8 +178,9 @@ async function handleGetItemPrices(args: {
 
         sendStatus(`Loading product pages from ${store}…`);
 
+        // Scrape top 5 candidates in parallel; fall back to Tavily snippet on timeout
         const SCRAPE_TIMEOUT_MS = 8000;
-        const topCandidates = candidates.slice(0, 3);
+        const topCandidates = candidates.slice(0, 5);
         const scrapeResults = await Promise.all(
           topCandidates.map(async (candidate) => {
             try {
@@ -186,6 +195,12 @@ async function handleGetItemPrices(args: {
               const { price, note } = await extractPriceWithLLM(product, store, pageContent, apiKey);
               return { price, note, url: candidate.url };
             } catch {
+              // Scrape failed/timed out — try Tavily snippet as fallback
+              const snippet: string = candidate?.content ?? "";
+              if (snippet && snippet.length >= 80) {
+                const { price, note } = await extractPriceWithLLM(product, store, snippet, apiKey).catch(() => ({ price: null, note: null }));
+                if (price) return { price, note, url: candidate.url };
+              }
               return null;
             }
           })
@@ -220,14 +235,22 @@ function storeDomain(store: string): string {
     ebay: "ebay.com",
     "home depot": "homedepot.com",
     lowes: "lowes.com",
-    "lowe's": "lowes.com",
     apple: "apple.com",
     "microsoft store": "microsoft.com",
+    "lowe's": "lowes.com",
     samsung: "samsung.com",
     "samsung.com": "samsung.com",
     "tractor supply": "tractorsupply.com",
     "tractor supply co": "tractorsupply.com",
     "tractor supply co.": "tractorsupply.com",
+    "dick's sporting goods": "dickssportinggoods.com",
+    "dicks sporting goods": "dickssportinggoods.com",
+    "dicks": "dickssportinggoods.com",
+    "foot locker": "footlocker.com",
+    "footlocker": "footlocker.com",
+    "nike": "nike.com",
+    "nike.com": "nike.com",
+    "rei": "rei.com",
   };
   return map[store.toLowerCase()] ?? `${store.toLowerCase().replace(/\s+/g, "")}.com`;
 }
