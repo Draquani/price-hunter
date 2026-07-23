@@ -7,10 +7,12 @@ import { ChatMessage, PriceComparisonResult, StoreResult } from "@/lib/types";
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = "google/gemini-3-flash-preview";
 
+// ─── SSE helpers ─────────────────────────────────────────────────────────────
 function sseEvent(data: object): string {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
 
+// ─── Tool: update_store_list ──────────────────────────────────────────────────
 function handleUpdateStoreList(args: {
   stores: string[];
   suggested_additions?: string[];
@@ -22,6 +24,7 @@ function handleUpdateStoreList(args: {
   };
 }
 
+// ─── LLM-based price extraction ───────────────────────────────────────────────
 async function extractPriceWithLLM(
   product: string,
   store: string,
@@ -29,27 +32,39 @@ async function extractPriceWithLLM(
   apiKey: string
 ): Promise<{ price: string | null; note: string | null }> {
   const truncated = pageContent.slice(0, 8000);
-  const res = await fetch(OPENROUTER_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://price-hunter.vercel.app",
-      "X-Title": "PriceHunter",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{
-        role: "user",
-        content: `You are a strict price extraction tool. From the product page content below (from ${store}), find the current selling price for EXACTLY: "${product}".
+  const EXTRACT_TIMEOUT_MS = 10000;
+  let res: Response;
+  try {
+    res = await Promise.race([
+      fetch(OPENROUTER_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": "https://price-hunter.vercel.app",
+          "X-Title": "PriceHunter",
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          messages: [{
+            role: "user",
+            content: `You are a strict price extraction tool. From the product page content below (from ${store}), find the current selling price for EXACTLY: "${product}".
 
 Return ONLY a JSON object:
 {"price": "$X.XX", "note": "optional short note"}
 
+CRITICAL ANTI-HALLUCINATION RULES (read first):
+- You are READING TEXT from a product page. You may ONLY report a price that appears VERBATIM in the page content below.
+- NEVER use your training knowledge of product prices — prices change and your training data is wrong for today's prices.
+- If you cannot find the price explicitly written in the text below, return {"price": null, "note": "price not visible"}.
+- The "note" field must only describe what is literally on the page. NEVER write "based on", "typically", "usually", "approximately", "estimated", or any inference. If you catch yourself doing this, return null instead.
+- When in doubt, return null. A missed price is far better than a wrong one.
+
 STRICT MATCHING RULES — every applicable criterion must match:
 1. Brand/manufacturer must match (e.g. if searching for Sony, reject Samsung, LG, Bose, etc.)
 2. Model name/number must match (e.g. if searching for WH-1000XM5, reject WH-1000XM4 or WF-1000XM5)
-3. Product category must match (e.g. if searching for headphones, reject a TV or laptop page)
+3. Product category must match exactly — an accessory, attachment, or add-on is NOT the same as the main product.
+   (e.g. if searching for a string trimmer, reject a trimmer attachment or blade; if searching for headphones, reject a TV)
 4. Key specs must match when specified — size, capacity, speed, color, variant, generation, power source, etc.
    Examples: 32GB ≠ 16GB; CL30 ≠ CL36; DDR5 ≠ DDR4; 65" ≠ 55"; M3 ≠ M2; gas ≠ electric/battery/brushless
 5. Kit configuration and form factor must match exactly:
@@ -67,20 +82,27 @@ PRICE RULES:
 Return {"price": null, "note": "not found"} if:
 - The brand is different
 - The model is a different variant or generation
-- The product is a completely different category
+- The product is a completely different category or is an accessory/attachment
 - The page shows multiple products (listing/search/category page)
 
 Return {"price": null, "note": "category page"} for search results, category listings, or pages with no single product.
-Return {"price": null, "note": "price not found"} if the page is the right product but the price isn't visible.
+Return {"price": null, "note": "price not visible"} if the page is the right product but the price isn't in the text.
 
 Do NOT return prices for accessories, extended warranties, bundles, or related items.
-Do NOT guess — only return the explicit current selling price for the exact product.
+Do NOT guess — only return a price you can see written in the page content below.
 
 Page content:
 ${truncated}`,
-      }],
-    }),
-  });
+          }],
+        }),
+      }) as Promise<Response>,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("extract timeout")), EXTRACT_TIMEOUT_MS)
+      ),
+    ]);
+  } catch {
+    return { price: null, note: "extraction timeout" };
+  }
   if (!res.ok) return { price: null, note: "extraction failed" };
   const data = await res.json();
   const text: string = data.choices?.[0]?.message?.content ?? "";
@@ -94,6 +116,7 @@ ${truncated}`,
   return { price: null, note: "parse error" };
 }
 
+// ─── Product-page URL patterns per store ─────────────────────────────────────
 const PRODUCT_URL_PATTERNS: Record<string, (url: string) => boolean> = {
   "amazon.com": (url) => /amazon\.com\/.*\/dp\/[A-Z0-9]{10}/.test(url),
   "bestbuy.com": (url) => /bestbuy\.com\/site\/.*\/\d+\.p/.test(url),
@@ -120,6 +143,7 @@ function isProductPage(url: string, domain: string): boolean {
   return checker ? checker(url) : true;
 }
 
+// ─── Tool: check_product_exists ──────────────────────────────────────────────
 async function handleCheckProductExists(args: {
   product: string;
 }): Promise<{ found: boolean; results: string[]; suggestion: string }> {
@@ -143,6 +167,7 @@ async function handleCheckProductExists(args: {
   }
 }
 
+// ─── Tool: get_item_prices ────────────────────────────────────────────────────
 async function handleGetItemPrices(args: {
   product: string;
   stores: string[];
@@ -153,7 +178,9 @@ async function handleGetItemPrices(args: {
   const firecrawl = new FirecrawlApp({ apiKey: process.env.FIRECRAWL_API_KEY! });
   const { product, stores, apiKey, sendStatus } = args;
 
+  // Purchase-intent query surfaces product pages over category pages
   const searchQuery = `${product} buy`;
+
   const storeList = stores.join(", ");
   sendStatus(`Searching ${storeList} for "${product}"…`);
 
@@ -183,32 +210,49 @@ async function handleGetItemPrices(args: {
 
         sendStatus(`Loading product pages from ${store}…`);
 
+        // Scrape top 5 candidates in parallel; fall back to Tavily snippet on timeout.
+        // CANDIDATE_TIMEOUT_MS is a hard cap on the entire per-candidate operation
+        // (scrape + extract), so slow OpenRouter calls can't stall the whole search.
         const SCRAPE_TIMEOUT_MS = 8000;
+        const CANDIDATE_TIMEOUT_MS = 15000;
         const topCandidates = candidates.slice(0, 5);
         const scrapeResults = await Promise.all(
           topCandidates.map(async (candidate) => {
             try {
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const scraped = await Promise.race([
-                firecrawl.scrapeUrl(candidate.url, { formats: ["markdown"] }) as Promise<any>,
-                new Promise<null>((_, reject) => setTimeout(() => reject(new Error("scrape timeout")), SCRAPE_TIMEOUT_MS)),
+              return await Promise.race([
+                (async () => {
+                  try {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    const scraped = await Promise.race([
+                      firecrawl.scrapeUrl(candidate.url, { formats: ["markdown"] }) as Promise<any>,
+                      new Promise<null>((_, reject) => setTimeout(() => reject(new Error("scrape timeout")), SCRAPE_TIMEOUT_MS)),
+                    ]);
+                    const pageContent: string = scraped?.markdown ?? candidate?.content ?? "";
+                    if (!pageContent || pageContent.length < 100) return null;
+                    sendStatus(`Reading price from ${store}…`);
+                    const { price, note } = await extractPriceWithLLM(product, store, pageContent, apiKey);
+                    return { price, note, url: candidate.url };
+                  } catch {
+                    // Scrape failed/timed out — try Tavily snippet as fallback
+                    const snippet: string = candidate?.content ?? "";
+                    if (snippet && snippet.length >= 80) {
+                      const { price, note } = await extractPriceWithLLM(product, store, snippet, apiKey).catch(() => ({ price: null, note: null }));
+                      if (price) return { price, note, url: candidate.url };
+                    }
+                    return null;
+                  }
+                })(),
+                new Promise<null>((resolve) =>
+                  setTimeout(() => resolve(null), CANDIDATE_TIMEOUT_MS)
+                ),
               ]);
-              const pageContent: string = scraped?.markdown ?? candidate?.content ?? "";
-              if (!pageContent || pageContent.length < 100) return null;
-              sendStatus(`Reading price from ${store}…`);
-              const { price, note } = await extractPriceWithLLM(product, store, pageContent, apiKey);
-              return { price, note, url: candidate.url };
             } catch {
-              const snippet: string = candidate?.content ?? "";
-              if (snippet && snippet.length >= 80) {
-                const { price, note } = await extractPriceWithLLM(product, store, snippet, apiKey).catch(() => ({ price: null, note: null }));
-                if (price) return { price, note, url: candidate.url };
-              }
               return null;
             }
           })
         );
 
+        // Return first candidate that has a price (preserving ranked order)
         const winner = scrapeResults.find((r) => r?.price);
         if (winner) {
           return { store, price: winner.price!, url: winner.url, available: true, note: winner.note ?? undefined };
@@ -225,6 +269,7 @@ async function handleGetItemPrices(args: {
   return results;
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function storeDomain(store: string): string {
   const map: Record<string, string> = {
     amazon: "amazon.com",
@@ -258,6 +303,7 @@ function storeDomain(store: string): string {
   return map[store.toLowerCase()] ?? `${store.toLowerCase().replace(/\s+/g, "")}.com`;
 }
 
+// ─── Main route handler ───────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
@@ -341,6 +387,7 @@ export async function POST(req: NextRequest) {
             if (jsonMatch) {
               try { priceResult = JSON.parse(jsonMatch[1]); } catch { /* ignore */ }
             }
+            // Override results array with actual scraper data — never trust LLM-generated URLs/prices
             if (priceResult && lastPriceResults) {
               priceResult.results = lastPriceResults;
             }
