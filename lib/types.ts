@@ -24,4 +24,5 @@ export interface AppMessage {
   content: string;
   priceResult?: PriceComparisonResult;
   isLoading?: boolean;
+  timestamp?: number; // ms since epoch
 }

@@ -13,6 +13,7 @@ const WELCOME: AppMessage = {
   id: "welcome",
   role: "assistant",
   content: `👋 Hey there! I'm **PriceHunter** — your personal bargain bloodhound.\n\nTell me what product you're looking for and which stores you want to compare, and I'll dig up the latest prices faster than you can say "free shipping."\n\nNot sure where to shop? I can suggest stores too. Just say the word.`,
+  timestamp: Date.now(),
 };
 
 function PawIcon({ className = "w-5 h-5" }: { className?: string }) {
@@ -58,9 +59,10 @@ export default function Home() {
     const text = input.trim();
     if (!text || isLoading) return;
     setInput("");
-    const userMsg: AppMessage = { id: uid(), role: "user", content: text };
+    const userMsg: AppMessage = { id: uid(), role: "user", content: text, timestamp: Date.now() };
+    const searchStart = Date.now();
     const loadingId = uid();
-    setMessages((prev) => [...prev, userMsg, { id: loadingId, role: "assistant", content: "", isLoading: true }]);
+    setMessages((prev) => [...prev, userMsg, { id: loadingId, role: "assistant", content: "", isLoading: true, timestamp: searchStart }]);
     setIsLoading(true);
     setLoadingStatus(DEFAULT_STATUS);
     const history: ChatMessage[] = messages
@@ -95,6 +97,7 @@ export default function Home() {
                 id: uid(), role: "assistant",
                 content: data.content ?? data.error ?? "Something went wrong.",
                 priceResult: data.priceResult ?? undefined,
+                timestamp: Date.now(),
               };
               setMessages((prev) => [...prev.filter((m) => m.id !== loadingId), assistantMsg]);
             }
@@ -117,10 +120,20 @@ export default function Home() {
   const removeStore = (store: string) => setSavedStores((prev) => prev.filter((s) => s !== store));
 
   const downloadSnapshot = () => {
-    const lines: string[] = [`PriceHunter Debug Snapshot — ${new Date().toISOString()}`, "=".repeat(60), ""];
+    const now = Date.now();
+    const lines: string[] = [`PriceHunter Debug Snapshot — ${new Date(now).toISOString()}`, "=".repeat(60), ""];
+    let lastUserSendTime: number | null = null;
     messages.forEach((m) => {
       if (m.id === "welcome") return;
-      lines.push(`[${m.role.toUpperCase()}]`);
+      const ts = m.timestamp ? new Date(m.timestamp).toISOString() : "unknown";
+      lines.push(`[${m.role.toUpperCase()}] ${ts}`);
+      if (m.role === "user") {
+        lastUserSendTime = m.timestamp ?? null;
+      }
+      if (m.role === "assistant" && m.timestamp && lastUserSendTime && m.priceResult) {
+        const elapsed = ((m.timestamp - lastUserSendTime) / 1000).toFixed(1);
+        lines.push(`⏱  Search completed in ${elapsed}s`);
+      }
       lines.push(m.content || "(loading)");
       if (m.priceResult) {
         lines.push("");
@@ -136,7 +149,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `pricehunter-snapshot-${Date.now()}.txt`;
+    a.download = `pricehunter-snapshot-${now}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -230,7 +243,7 @@ export default function Home() {
             <p className="text-white/20 text-xs">Prices fetched live via Tavily + Firecrawl · Enter to send · Shift+Enter for new line</p>
             <button onClick={downloadSnapshot} title="Download debug snapshot" className="text-white/20 hover:text-white/60 transition-colors flex items-center gap-1 text-xs ml-3 flex-shrink-0">
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0118.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
               snapshot
