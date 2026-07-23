@@ -170,7 +170,6 @@ async function handleGetItemPrices(args: {
 
         sendStatus(`Loading product pages from ${store}…`);
 
-        // Scrape top 3 candidates in parallel with 8s timeout per scrape
         const SCRAPE_TIMEOUT_MS = 8000;
         const topCandidates = candidates.slice(0, 3);
         const scrapeResults = await Promise.all(
@@ -224,6 +223,8 @@ function storeDomain(store: string): string {
     "lowe's": "lowes.com",
     apple: "apple.com",
     "microsoft store": "microsoft.com",
+    samsung: "samsung.com",
+    "samsung.com": "samsung.com",
     "tractor supply": "tractorsupply.com",
     "tractor supply co": "tractorsupply.com",
     "tractor supply co.": "tractorsupply.com",
@@ -290,8 +291,15 @@ export async function POST(req: NextRequest) {
           });
 
           if (!response.ok) {
-            const err = await response.text();
-            send({ error: `LLM API error: ${err}`, priceResult: null, updatedStores });
+            const errText = await response.text();
+            let errBody: { error?: { code?: number; message?: string } } = {};
+            try { errBody = JSON.parse(errText); } catch { /* ignore */ }
+            const code = errBody?.error?.code;
+            const userMsg =
+              code === 403
+                ? "Something in the conversation triggered a content filter. Could you rephrase or try a slightly different search?"
+                : `Search service error — please try again. (${response.status})`;
+            send({ error: userMsg, priceResult: null, updatedStores });
             controller.close();
             return;
           }
@@ -333,7 +341,7 @@ export async function POST(req: NextRequest) {
                 result = handleUpdateStoreList(args);
                 updatedStores = (result as { stores: string[] }).stores;
               } else if (tc.function.name === "check_product_exists") {
-                sendStatus("Verifying the product exists…");
+                sendStatus("Looking up current models…");
                 result = await handleCheckProductExists(args);
               } else if (tc.function.name === "get_item_prices") {
                 result = await handleGetItemPrices({ ...args, apiKey, sendStatus });
