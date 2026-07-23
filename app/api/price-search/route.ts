@@ -52,6 +52,11 @@ STRICT MATCHING RULES — every applicable criterion must match:
 3. Product category must match (e.g. if searching for headphones, reject a TV or laptop page)
 4. Key specs must match when specified — size, capacity, speed, color, variant, generation, power source, etc.
    Examples: 32GB ≠ 16GB; CL30 ≠ CL36; DDR5 ≠ DDR4; 65" ≠ 55"; M3 ≠ M2; gas ≠ electric/battery/brushless
+5. Kit configuration and form factor must match exactly:
+   - A 4x32GB kit is NOT the same as a 1x128GB single module, even though both total 128GB.
+   - LRDIMM ≠ RDIMM ≠ UDIMM ≠ ECC ≠ SO-DIMM — these are different form factors, not interchangeable.
+   - If searching for a single stick (1x128GB) and the page shows a kit (4x32GB), return {"price": null, "note": "kit, not single module"}.
+   - If searching for LRDIMM and the page shows UDIMM or RDIMM, return {"price": null, "note": "wrong form factor"}.
 
 PRICE RULES:
 - Return the CURRENT SELLING PRICE — what a customer pays today (the "Add to Cart" / "Buy Now" price).
@@ -178,7 +183,6 @@ async function handleGetItemPrices(args: {
 
         sendStatus(`Loading product pages from ${store}…`);
 
-        // Scrape top 5 candidates in parallel; fall back to Tavily snippet on timeout
         const SCRAPE_TIMEOUT_MS = 8000;
         const topCandidates = candidates.slice(0, 5);
         const scrapeResults = await Promise.all(
@@ -195,7 +199,6 @@ async function handleGetItemPrices(args: {
               const { price, note } = await extractPriceWithLLM(product, store, pageContent, apiKey);
               return { price, note, url: candidate.url };
             } catch {
-              // Scrape failed/timed out — try Tavily snippet as fallback
               const snippet: string = candidate?.content ?? "";
               if (snippet && snippet.length >= 80) {
                 const { price, note } = await extractPriceWithLLM(product, store, snippet, apiKey).catch(() => ({ price: null, note: null }));
