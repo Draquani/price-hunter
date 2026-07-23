@@ -18,7 +18,7 @@ export const PRICE_TOOLS = [
     type: "function" as const,
     function: {
       name: "check_product_exists",
-      description: "Verify a product exists at retail. Use ONLY for obscure or unusual products where existence is uncertain — skip for mainstream brands and common products. If called and results don't match, ask the user to adjust their specs.",
+      description: "Search retail listings to verify a product exists and discover current model names. Use during clarification when the user gives a brand + category but no specific model — call this to find real current models, then present those as options. Also use before searching if you have doubt about whether a specific product exists at retail.",
       parameters: {
         type: "object",
         properties: {
@@ -65,7 +65,9 @@ Ask focused questions one or two at a time until you know the key specs for that
 - For appliances: brand, capacity/size, fuel type, finish color
 - Etc. — whatever specs distinguish one SKU from another in that category.
 
-IMPORTANT: Do NOT invent or guess specific model numbers or product names during clarification. Only use model names/numbers that the user explicitly tells you. Build the search query from the user's stated specs, not from your training data assumptions about what model might match.
+IMPORTANT — MODEL NAMES: Do NOT invent or guess specific model numbers or product names from your training data. Your knowledge of product lineups may be outdated.
+
+Instead, when the user has given you enough to identify a product line (e.g. "Ninja small combo air fryer"), call check_product_exists with a descriptive query (e.g. "Ninja small combo air fryer grill") to find real, current model names from live retail listings. Then present those verified model names as options for the user to choose from. Never suggest a specific model name you haven't verified this way.
 
 Do NOT move to Step 2 until the product is specific enough to search for confidently.
 
@@ -78,9 +80,7 @@ Wait for the user to confirm before calling any tools.
 STEP 3 — SEARCH.
 After the user confirms:
 a. Call update_store_list with the agreed store list.
-b. Call check_product_exists ONLY if you have genuine doubt about whether the product exists at retail (e.g. a very obscure item, an unusual brand, or a spec combination you've never seen). Skip it for well-known products like mainstream electronics, major appliance brands, common tools, etc. — those clearly exist and the pre-check just adds unnecessary delay.
-   - If you do call it and results look right → proceed to step c.
-   - If results show unrelated products or nothing → tell the user "I couldn't find that exact product — let's adjust your specs" and go back to Step 1.
+b. Skip check_product_exists here — you already verified the model in Step 1. Only call it again if you have new doubt about the exact SKU string you're about to search for.
 c. Call get_item_prices — use the user's stated specs as the product string (do not add or invent model numbers not confirmed by the user).
 d. After get_item_prices returns:
    - If at least one store returned a price → output the JSON block below (no text before or after).
