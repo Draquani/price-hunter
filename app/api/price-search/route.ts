@@ -66,7 +66,8 @@ STRICT MATCHING RULES — every applicable criterion must match:
 3. Product category must match exactly — an accessory, attachment, or add-on is NOT the same as the main product.
    (e.g. if searching for a string trimmer, reject a trimmer attachment or blade; if searching for headphones, reject a TV)
 4. Key specs must match when specified — size, capacity, speed, color, variant, generation, power source, etc.
-   Examples: 32GB ≠ 16GB; CL30 ≠ CL36; DDR5 ≠ DDR4; 65" ≠ 55"; M3 ≠ M2; gas ≠ electric/battery/brushless
+   POWER SOURCE IS CRITICAL: gas ≠ electric ≠ battery/cordless ≠ brushless. A "60V battery" mower is NOT a "gas" mower. A "corded electric" trimmer is NOT a "battery" trimmer. If the searched product is gas-powered and the page shows electric or battery, return {"price": null, "note": "wrong power source (battery, not gas)"}.
+   Other spec examples: 32GB ≠ 16GB; CL30 ≠ CL36; DDR5 ≠ DDR4; 65" ≠ 55"; M3 ≠ M2
 5. Kit configuration and form factor must match exactly:
    - A 4x32GB kit is NOT the same as a 1x128GB single module, even though both total 128GB.
    - LRDIMM ≠ RDIMM ≠ UDIMM ≠ ECC ≠ SO-DIMM — these are different form factors, not interchangeable.
@@ -120,7 +121,8 @@ ${truncated}`,
 const PRODUCT_URL_PATTERNS: Record<string, (url: string) => boolean> = {
   "amazon.com": (url) => /amazon\.com\/.*\/dp\/[A-Z0-9]{10}/.test(url),
   "bestbuy.com": (url) => /bestbuy\.com\/site\/.*\/\d+\.p/.test(url),
-  "walmart.com": (url) => /walmart\.com\/ip\//.test(url),
+  // Reject used/refurb Walmart listings (conditionGroupCode != 1 means not new)
+  "walmart.com": (url) => /walmart\.com\/ip\//.test(url) && !/[?&]conditionGroupCode=[^1]/.test(url),
   "target.com": (url) => /target\.com\/p\//.test(url),
   "newegg.com": (url) => /newegg\.com\/p\//.test(url) || /newegg\.com\/.*\/Item\.aspx/.test(url),
   "bhphotovideo.com": (url) => /bhphotovideo\.com\/c\/product\//.test(url),
@@ -134,6 +136,8 @@ const PRODUCT_URL_PATTERNS: Record<string, (url: string) => boolean> = {
 const CATEGORY_PATTERNS = [
   "/search", "/browse", "/category", "?q=", "?k=", "?query=",
   "/s?", "/c/", "/shop/", "/b/", "/sch/", "/deals/", "/list/",
+  // Walmart used/refurb condition codes (conditionGroupCode=1 is new; anything else is not)
+  "conditiongroupcode=2", "conditiongroupcode=3", "conditiongroupcode=4",
 ];
 
 function isProductPage(url: string, domain: string): boolean {
